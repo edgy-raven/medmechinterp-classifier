@@ -1,0 +1,7 @@
+keyring.json
+.vscode
+__pycache__
+*input_data
+output_artifacts
+mechinterp
+*.pyc
