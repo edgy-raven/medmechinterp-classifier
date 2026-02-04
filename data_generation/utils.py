@@ -13,25 +13,25 @@ ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>",
                        re.IGNORECASE | re.DOTALL)
 
 OPENROUTER_MODELS = [
-    "openai/gpt-oss-20b",
+    # "openai/gpt-oss-20b",
     "qwen/qwq-32b",
-    "deepseek/deepseek-r1-distill-llama-70b",
-    "deepseek/deepseek-r1",
+    # "deepseek/deepseek-r1-distill-llama-70b",
+    # "deepseek/deepseek-r1",
+    # "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
 ]
 
 LOCAL_MODELS = [
-    "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
-    "FreedomIntelligence/HuatuoGPT-o1-8B",
-    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
-    "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+    # "FreedomIntelligence/HuatuoGPT-o1-8B",
+    # "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+    # "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
 ]
 
 CLAUDE_MODELS = [
-    "claude-3-7-sonnet-20250219",
+    # "claude-3-7-sonnet-20250219",
 ]
 
 XAI_MODELS = [
-    "grok-3-mini",
+    # "grok-3-mini",
 ]
 
 LOCAL_MODEL_MAP = {
@@ -51,7 +51,7 @@ def hash_string_md5(data: str) -> None:
     return md5_hash.hexdigest()
 
 
-def process_prompt_with_reasoning(prompt, model):
+def process_prompt_with_reasoning(prompt, model, full_response=False):
     if model in LOCAL_MODELS:
         client = OpenAI(
             base_url="http://localhost:8080/v1",
@@ -66,6 +66,8 @@ def process_prompt_with_reasoning(prompt, model):
                 }
             ],
         )
+        if full_response:
+            return completion
         if completion.choices[0].message.get("reasoning_content") is None:
             thinking = extract_thinking_process(
                 completion.choices[0].message.content)
@@ -93,6 +95,8 @@ def process_prompt_with_reasoning(prompt, model):
                 }
             },
         )
+        if full_response:
+            return completion
         if completion.choices[0].message.reasoning is None:
             thinking = extract_thinking_process(
                 completion.choices[0].message.content)
@@ -116,7 +120,8 @@ def process_prompt_with_reasoning(prompt, model):
                 }
             ]
         )
-        print(message)
+        if full_response:
+            return message
         return message.content[1].text, message.content[0].thinking
     elif model in XAI_MODELS:
         client = Client(
@@ -128,7 +133,24 @@ def process_prompt_with_reasoning(prompt, model):
             messages=[user(prompt)],
         )
         response = chat.sample()
+        if full_response:
+            return response
         return response.content, response.reasoning_content
+
+
+def process_openai_prompt(prompt, model, client):
+    completion = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+    )
+    return completion.choices[0].message.content
+
+# ⚠ VIBE CODED FUNCTION
 
 
 def extract_thinking_process(response: str, question: str = "") -> str:
@@ -409,6 +431,8 @@ def extract_thinking_process(response: str, question: str = "") -> str:
 
     return _final_cleanup(cleaned)
 
+# ⚠ VIBE CODED FUNCTION
+
 
 def extract_answer(full_response: str, question_id: str = "") -> str:
     """Return the text of the last <answer>...</answer> block or empty string.
@@ -530,3 +554,75 @@ def extract_answer(full_response: str, question_id: str = "") -> str:
     print(
         f"[MALFORMED] {question_id}: fallback=none, extracted=''", file=sys.stderr)
     return ""
+
+# ⚠ VIBE CODED FUNCTION
+
+
+def split_into_sentences(text, min_words=3):
+    protected_text = text
+    replacements = []
+
+    # Protect decimal numbers
+    for match in re.finditer(r'\d+\.\d+', text):
+        placeholder = f"__DECIMAL_{len(replacements)}__"
+        replacements.append((placeholder, match.group()))
+        protected_text = protected_text.replace(match.group(), placeholder)
+
+    # Protect single letter abbreviations (letter followed by period and space/word)
+    for match in re.finditer(r'\b[A-Za-z]\.\s+[A-Za-z]', text):
+        placeholder = f"__ABBREV_{len(replacements)}__"
+        replacements.append((placeholder, match.group()))
+        protected_text = protected_text.replace(match.group(), placeholder)
+
+    # Protect mathematical expressions like "k!" (letter followed by exclamation)
+    for match in re.finditer(r'\b[A-Za-z]!', text):
+        placeholder = f"__MATH_{len(replacements)}__"
+        replacements.append((placeholder, match.group()))
+        protected_text = protected_text.replace(match.group(), placeholder)
+
+    # Handle consecutive punctuation by normalizing it first
+    # Replace consecutive punctuation with single punctuation for splitting
+    consecutive_punct_pattern = r'([.!?;])\1+'
+    consecutive_matches = []
+    for match in re.finditer(consecutive_punct_pattern, protected_text):
+        consecutive_matches.append((match.start(), match.end(), match.group()))
+
+    # Split using simple lookbehind after normalizing consecutive punctuation
+    normalized_text = re.sub(consecutive_punct_pattern, r'\1', protected_text)
+    sentences = re.split(r'(?<=[.!?;\n])', normalized_text)
+
+    # Restore consecutive punctuation in the sentences
+    if consecutive_matches:
+        # Map back to original positions
+        for start, end, original in consecutive_matches:
+            # Find which sentence contains this punctuation and restore it
+            for i, sentence in enumerate(sentences):
+                if sentence and start < len(protected_text):
+                    # This is a simplified restoration - may need refinement for complex cases
+                    if original[0] in sentence and len(original) > 1:
+                        sentences[i] = sentence.replace(
+                            original[0], original, 1)
+
+    # Restore protected patterns
+    for placeholder, original in replacements:
+        sentences = [s.replace(placeholder, original) for s in sentences]
+
+    # Clean up sentences
+    sentences = [s.strip() for s in sentences if s.strip()]
+    sentences = [s for s in sentences if len(s.split()) >= min_words]
+
+    # Post-processing: Handle sentences that start with quotes after period splits
+    # If a sentence starts with a quote, move it to the end of the previous sentence
+    processed_sentences = []
+    for i, sentence in enumerate(sentences):
+        if i > 0 and sentence.startswith('"') and processed_sentences:
+            # Move the quote to the previous sentence and remove it from current
+            processed_sentences[-1] += '"'
+            # Remove quote and leading space
+            current_sentence = sentence[1:].strip()
+            if current_sentence and len(current_sentence.split()) >= min_words:
+                processed_sentences.append(current_sentence)
+        else:
+            processed_sentences.append(sentence)
+
+    return processed_sentences

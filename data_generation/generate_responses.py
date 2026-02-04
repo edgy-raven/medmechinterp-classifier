@@ -8,6 +8,7 @@ import pandas as pd
 from datasets import load_dataset
 from tqdm import tqdm
 
+from grade_responses import grade_row
 from utils import extract_answer, hash_string_md5, process_prompt_with_reasoning, MODELS
 
 PROMPT_TEMPLATE = (
@@ -26,8 +27,10 @@ def process_row_with_model(row, model_name, dataset_name, max_retries=5, retry_c
     prompt = PROMPT_TEMPLATE.format(case_prompt=question)
     try:
         response, reasoning = process_prompt_with_reasoning(prompt, model_name)
-        if response is None and retry_count < max_retries:
-            print(f"Retrying row {row.get('index', 'unknown')} for model {model_name} (attempt {retry_count + 1})")
+        answer = extract_answer(response)
+        if (answer == '' or response is None) and retry_count < max_retries:
+            print(
+                f"Retrying row {row.get('index', 'unknown')} for model {model_name} (attempt {retry_count + 1})")
             return process_row_with_model(row, model_name, dataset_name, retry_count=retry_count + 1)
         return {
             'original_message': {
@@ -38,9 +41,9 @@ def process_row_with_model(row, model_name, dataset_name, max_retries=5, retry_c
             'full_response': prompt + "\n<think>" + reasoning + "</think>\n" + response,
             'question_id': str(int(row['index'])) if row['index'] is str(row['index']).isnumeric() else row['index'],
             'category': 'diagnosis',
-            'question': row['case_prompt'],
+            'case_prompt': row['case_prompt'],
             'gold_answer': row['gold_answer'],
-            'extracted_answer': extract_answer(response),
+            'extracted_answer': answer,
             'dataset_name': dataset_name,
             'reasoning_trace': reasoning,
             'pmcid': hash_string_md5(row['case_prompt']),
@@ -73,6 +76,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', '--dataset', type=str, required=True,
                         help='Dataset name to process')
+    parser.add_argument('-p', '--path', type=str, required=True,
+                        help='Path to the input JSON file or HuggingFace dataset')
     parser.add_argument('-m', '--models', nargs='+', default=MODELS)
     parser.add_argument('-w', '--num_workers', type=int, default=4,
                         help='Number of parallel workers to use')
@@ -86,19 +91,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.dataset == 'medqa':
-        df = pd.read_csv('MedQA_complete_graded_data.csv')
+        df = pd.read_csv(args.path)
         df['case_prompt'] = df['question']
         df['gold_answer'] = df['answer']
     elif args.dataset == 'medmcqa':
-        df = load_dataset('matthewshu/medmcqa-filtered',
+        df = load_dataset(args.path,
                           split='train').to_pandas()
         df['index'] = df['id']
     elif args.dataset == 'medcasereasoning':
-        df = load_dataset('tmknguyen/MedCaseReasoning-filtered',
+        df = load_dataset(args.path,
                           split='train').to_pandas()
         df['index'] = df['pmcid']
     elif args.dataset == 'nejm':
-        df = pd.read_csv('nejm_complete_graded_scraped.csv')
+        df = pd.read_csv(args.path)
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
@@ -106,7 +111,9 @@ if __name__ == "__main__":
         df = df.head(args.limit)
 
     for model_name in args.models:
-        output_file = f"{args.output}/{args.dataset}_with_second_responses/results_{model_name.split('/')[-1]}.json"
+        os.makedirs(
+            f"{args.output}/{model_name.split('/')[-1]}/{args.dataset}_with_second_responses", exist_ok=True)
+        output_file = f"{args.output}/{model_name.split('/')[-1]}/{args.dataset}_with_second_responses/results_{model_name.split('/')[-1]}.json"
         if args.skip_existing and os.path.exists(output_file):
             print(
                 f"Skipping model: {model_name} as output file already exists.")
@@ -114,6 +121,5 @@ if __name__ == "__main__":
         print(f"Processing model: {model_name} on dataset: {args.dataset}")
         results = process_dataset_with_model(
             df, model_name, args.dataset, num_workers=args.num_workers)
-        os.mkdir(args.output) if not os.path.exists(args.output) else None
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)
