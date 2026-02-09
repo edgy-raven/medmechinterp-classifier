@@ -1,0 +1,5 @@
+python generate_responses_proprietary_models.py
+
+python grade_responses.py --input proprietary_models_artifacts/gemini_results.json
+python grade_responses.py --input proprietary_models_artifacts/anthropic_results.json
+python grade_responses.py --input proprietary_models_artifacts/openai_results.json
